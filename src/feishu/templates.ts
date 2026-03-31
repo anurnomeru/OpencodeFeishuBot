@@ -416,7 +416,7 @@ export class BeautifulMessageTemplate implements MessageTemplate {
       }
     }
 
-    sections.push("**📂 路径**");
+sections.push("**📂 路径**");
     sections.push(`- 目录: ${context.project.workingDir}`);
     if (progress.fileChanges) {
       const fc = progress.fileChanges;
@@ -426,6 +426,31 @@ export class BeautifulMessageTemplate implements MessageTemplate {
       if (fc.deleted) parts.push(`-${fc.deleted}`);
       if (parts.length > 0) sections.push(`- 变更: ${parts.join(" / ")} 个文件`);
     }
+    sections.push("");
+
+    // Quickview 放底部：飞书消息从上往下看，重要信息应放在最下面
+    sections.push("---");
+    sections.push("**📌 Quickview**");
+    sections.push(`- 项目: ${context.project.projectName}`);
+    sections.push(`- 会话: ${context.sessionTitle ?? context.sessionID ?? "-"}`);
+    sections.push(`- 事件: \`${originalEventType ?? eventType}\``);
+    if (eventPayload && typeof eventPayload === "object") {
+      const payload = eventPayload as Record<string, unknown>;
+      const status = payload.status as Record<string, unknown> | undefined;
+      if (status?.type) {
+        const statusType = status.type as string;
+        if (statusType === "idle") {
+          sections.push(`- 状态: 空闲，等待指令`);
+        } else if (statusType === "busy") {
+          sections.push(`- 状态: 忙碌中`);
+        } else if (statusType === "retry") {
+          sections.push(`- 状态: 重试中`);
+        } else {
+          sections.push(`- 状态: ${statusType}`);
+        }
+      }
+    }
+    sections.push(`- 一句话: ${config.description}`);
     sections.push("");
 
     const now = new Date();
