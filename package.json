@@ -1,7 +1,7 @@
 {
   "name": "opencode-feishu-notifier",
-  "version": "0.3.1",
-  "description": "OpenCode plugin for Feishu notifications",
+  "version": "0.4.0",
+  "description": "OpenCode plugin for Feishu notifications with bidirectional interaction",
   "type": "module",
   "main": "src/index.ts",
   "files": [
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.24.0",
     "@opencode-ai/plugin": "^1.0.0"
   },
   "devDependencies": {

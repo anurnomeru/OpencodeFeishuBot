@@ -1,0 +1,15 @@
+{
+  "name": "feishu-websocket-prototype",
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "start": "tsx main.ts",
+    "test-send": "tsx test-send.ts"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.24.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0"
+  }
+}

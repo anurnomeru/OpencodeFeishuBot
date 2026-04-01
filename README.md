@@ -1,6 +1,37 @@
 # OpenCode Feishu Notifier
 
-OpenCode 飞书通知插件 - 在关键事件发生时向飞书发送通知
+OpenCode 飞书通知插件 - 支持双向交互，可在飞书中直接回复触发 OpenCode 继续执行
+
+## 功能特性
+
+- 🔔 **通知推送**: 支持多种 OpenCode 事件通知
+- 💬 **双向交互**: 在飞书中回复消息，触发 OpenCode 继续执行
+- 🎯 **智能过滤**: 避免通知轰炸
+- 🔒 **权限批准**: 远程批准文件访问权限
+- 📝 **完整文档**: 开发文档和技术文档
+
+## 双向交互
+
+插件支持在飞书中回复消息来触发 OpenCode 执行操作：
+
+| 场景 | 飞书通知 | 回复关键词 | 触发动作 |
+|------|---------|-----------|---------|
+| 会话暂停 | "会话已暂停" | "继续" | 继续执行 |
+| 权限请求 | "需要文件访问权限" | "批准" / "拒绝" | 批准/拒绝权限 |
+| 问题选择 | "请选择方案" | "1" 或 "方案A" | 选择选项 |
+
+### 配置飞书事件订阅
+
+要启用双向交互，需要在飞书开发者后台配置事件订阅：
+
+1. 登录 [飞书开发者后台](https://open.feishu.cn/app)
+2. 选择企业自建应用
+3. 进入 **事件与回调 > 事件配置**
+4. 选择 **使用长连接接收事件**
+5. 添加订阅事件：`im.message.receive_v1`
+6. 开通权限：`im:message`
+
+详细技术文档请查看 [docs/TECH.md](docs/TECH.md)
 
 ## 快速开始
 
@@ -116,13 +147,15 @@ gh api --method PUT /user/starred/Thrimbda/opencode-feishu-notifier
 
 ```json
 {
-  "plugin": ["opencode-feishu-notifier@0.3.0"]
+  "plugin": ["opencode-feishu-notifier@0.4.0"]
 }
 ```
 
 ## 文档
 
 - [📚 快速开始指南](docs/QUICK_START.md)
+- [🔧 技术文档](docs/TECH.md) - WebSocket 双向交互技术方案
+- [🧪 原型验证](docs/PROTOTYPE.md) - 最小化验证流程
 - [🛠️ 本地开发指南](docs/LOCAL_DEVELOPMENT.md)
 - [📝 新增事件说明](docs/NEW_EVENTS.md)
 - [✅ 测试报告](docs/TEST_REPORT.md)

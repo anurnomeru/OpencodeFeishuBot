@@ -9,7 +9,7 @@ type TenantTokenResponse = {
 
 interface TokenCacheEntry {
   token: string
-  expiresAt: number // timestamp in milliseconds
+  expiresAt: number
 }
 
 const tokenCache = new Map<string, TokenCacheEntry>()
@@ -20,7 +20,6 @@ function clearTokenCache(config: FeishuConfig) {
 }
 
 function isTokenExpiredError(code: number): boolean {
-  // Common Feishu token expiration error codes
   return code === 99991663 || code === 99991664 || code === 99991668
 }
 
@@ -46,11 +45,18 @@ type FeishuPostContent = {
   }
 }
 
+type InteractiveContent = {
+  elements: Array<{
+    tag: 'markdown' | 'div' | 'note'
+    content?: string
+    text?: string
+  }>
+}
+
 function ensureFetch(): typeof fetch {
   if (typeof fetch === "undefined") {
     throw new Error("Global fetch is not available. Use Node.js 18+.")
   }
-
   return fetch
 }
 
@@ -59,7 +65,6 @@ async function readJson<T>(response: Response): Promise<T> {
   if (!text) {
     throw new Error(`Empty response from Feishu API (${response.status}).`)
   }
-
   return JSON.parse(text) as T
 }
 
@@ -67,9 +72,8 @@ export async function getTenantAccessToken(config: FeishuConfig): Promise<string
   const cacheKey = `${config.appId}:${config.appSecret}`
   const now = Date.now()
   
-  // Check cache
   const cached = tokenCache.get(cacheKey)
-  if (cached && cached.expiresAt > now + 60000) { // 60 second buffer
+  if (cached && cached.expiresAt > now + 60000) {
     return cached.token
   }
   
@@ -78,9 +82,7 @@ export async function getTenantAccessToken(config: FeishuConfig): Promise<string
     "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         app_id: config.appId,
         app_secret: config.appSecret
@@ -98,9 +100,8 @@ export async function getTenantAccessToken(config: FeishuConfig): Promise<string
     throw new Error(`Feishu auth failed: ${payload.msg} (${payload.code})`)
   }
 
-  // Cache token with expiration (default 2 hours if not provided)
   const expiresIn = payload.expire ? payload.expire * 1000 : 2 * 60 * 60 * 1000
-  const expiresAt = now + expiresIn - 60000 // 60 second buffer
+  const expiresAt = now + expiresIn - 60000
   
   tokenCache.set(cacheKey, {
     token: payload.tenant_access_token,
@@ -112,7 +113,7 @@ export async function getTenantAccessToken(config: FeishuConfig): Promise<string
 
 async function sendMessage(
   config: FeishuConfig,
-  msgType: "text" | "post",
+  msgType: "text" | "post" | "interactive",
   content: unknown
 ): Promise<MessageResponse> {
   const fetchImpl = ensureFetch()
@@ -142,12 +143,11 @@ async function sendMessage(
 
     const payload = await readJson<MessageResponse>(response)
     if (payload.code !== 0) {
-      // Check if token expired
       if (retryOnTokenExpired && isTokenExpiredError(payload.code)) {
         clearTokenCache(config)
-        return sendWithToken(false) // Retry once
+        return sendWithToken(false)
       }
-      throw new Error(`Feishu message failed: ${payload.msg} (${payload.code}) - Response: ${JSON.stringify(payload)}`)
+      throw new Error(`Feishu message failed: ${payload.msg} (${payload.code})`)
     }
 
     return payload
@@ -163,29 +163,37 @@ export async function sendTextMessage(
   return sendMessage(config, "text", { text })
 }
 
-/**
- * 将纯文本转换为飞书富文本（post）格式
- * 简化实现：所有文本作为一个段落
- */
-function textToPostContent(text: string, title: string = "OpenCode 通知"): FeishuPostContent {
-  // 移除空行，但保留换行符
-  const cleanedText = text.split('\n').filter(line => line.trim().length > 0).join('\n')
-  
-  const content = [
-    [
+export async function sendMarkdownMessage(
+  config: FeishuConfig,
+  content: string
+): Promise<MessageResponse> {
+  const interactiveContent: InteractiveContent = {
+    elements: [
       {
-        tag: 'text',
-        text: cleanedText,
-        un_escape: true
+        tag: 'markdown',
+        content
       }
     ]
-  ]
+  }
+  return sendMessage(config, "interactive", interactiveContent)
+}
+
+function textToPostContent(text: string, title: string = "OpenCode 通知"): FeishuPostContent {
+  const cleanedText = text.split('\n').filter(line => line.trim().length > 0).join('\n')
   
   return {
     post: {
       zh_cn: {
         title,
-        content
+        content: [
+          [
+            {
+              tag: 'text',
+              text: cleanedText,
+              un_escape: true
+            }
+          ]
+        ]
       }
     }
   }

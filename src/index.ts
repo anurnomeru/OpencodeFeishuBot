@@ -1,14 +1,19 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { loadConfigWithSource } from "./config";
-import { sendTextMessage, sendRichTextMessage } from "./feishu/client";
+import { sendMarkdownMessage, sendTextMessage, sendRichTextMessage } from "./feishu/client";
 import { buildNotification, recordEventContext, extractSessionID } from "./feishu/messages";
 import { mapEventToNotification } from "./hooks";
+import { FeishuWebSocket } from "./websocket";
+import { ReplyHandler } from "./reply-handler";
+import { setMapping } from "./store";
 
 const serviceName = "opencode-feishu-notifier";
 
 const FeishuNotifierPlugin: Plugin = async ({ client, directory }) => {
   let configCache: ReturnType<typeof loadConfigWithSource> | null = null;
   let configError: Error | null = null;
+  let wsClient: FeishuWebSocket | null = null;
+  let replyHandler: ReplyHandler | null = null;
 
   const log = (
     level: "debug" | "info" | "warn" | "error",
@@ -52,6 +57,29 @@ const FeishuNotifierPlugin: Plugin = async ({ client, directory }) => {
     } catch (error) {
       configError = error instanceof Error ? error : new Error(String(error));
       logError("Feishu config error", { error: configError.message });
+    }
+  };
+
+  const startWebSocket = async () => {
+    if (!configCache || wsClient) return;
+    
+    try {
+      console.log("[Feishu] Starting WebSocket...");
+      replyHandler = new ReplyHandler(configCache.config, client, log);
+      wsClient = new FeishuWebSocket(configCache.config);
+      
+      await wsClient.start(async (data) => {
+        console.log("[Feishu] WebSocket message received");
+        if (replyHandler) {
+          await replyHandler.handle(data);
+        }
+      });
+      
+      console.log("[Feishu] WebSocket started successfully");
+      logInfo("WebSocket started for bidirectional interaction");
+    } catch (error) {
+      console.error("[Feishu] WebSocket start failed:", error);
+      logError("WebSocket start failed", { error: String(error) });
     }
   };
 
@@ -147,6 +175,8 @@ const FeishuNotifierPlugin: Plugin = async ({ client, directory }) => {
         return;
       }
 
+      await startWebSocket();
+
       const { text, title, richContent } = await buildNotification(
         notificationType,
         event,
@@ -160,40 +190,51 @@ const FeishuNotifierPlugin: Plugin = async ({ client, directory }) => {
         hasRichContent: !!richContent,
       });
 
-      try {
+try {
         let response;
-        if (richContent) {
-          // 尝试发送富文本消息
-          try {
-            logDebug("Attempting to send rich text message", {
-              richContentType: typeof richContent,
-              hasPost: !!richContent.post,
-              hasZhCn: !!(richContent.post?.zh_cn),
-              titleLength: richContent.post?.zh_cn?.title?.length ?? 0,
-              contentLength: richContent.post?.zh_cn?.content?.length ?? 0,
-            });
-            response = await sendRichTextMessage(configCache.config, text, title, richContent);
-            logDebug("Feishu rich notification sent", {
-              messageId: response.data?.message_id ?? null,
-            });
-           } catch (richError) {
-             // 富文本消息失败，回退到纯文本
-             logDebug("Rich text message failed, falling back to text", {
-               error: richError instanceof Error ? richError.message : String(richError),
-               stack: richError instanceof Error ? richError.stack : undefined,
-               name: richError instanceof Error ? richError.name : undefined,
-             });
-            response = await sendTextMessage(configCache.config, text);
-            logDebug("Feishu text notification sent (fallback)", {
-              messageId: response.data?.message_id ?? null,
-            });
-          }
-        } else {
-          // 回退到纯文本
-          response = await sendTextMessage(configCache.config, text);
-          logDebug("Feishu text notification sent", {
+        
+        try {
+          response = await sendMarkdownMessage(configCache.config, text);
+          logDebug("Feishu markdown notification sent", {
             messageId: response.data?.message_id ?? null,
           });
+        } catch (markdownError) {
+          logDebug("Markdown message failed, falling back to text", {
+            error: markdownError instanceof Error ? markdownError.message : String(markdownError),
+          });
+          response = await sendTextMessage(configCache.config, text);
+          logDebug("Feishu text notification sent (fallback)", {
+            messageId: response.data?.message_id ?? null,
+          });
+        }
+
+        const messageId = response.data?.message_id;
+        const sessionId = extractSessionID(event);
+        
+        if (messageId && sessionId) {
+          const actionType = mapNotificationToAction(notificationType);
+          if (actionType) {
+            const mapping: {
+              sessionId: string;
+              actionType: 'continue' | 'permission' | 'question' | 'input';
+              permissionId?: string;
+              createdAt: number;
+            } = {
+              sessionId,
+              actionType,
+              createdAt: Date.now(),
+            };
+
+            if (notificationType === 'permission_required') {
+              const perm = (event.properties as any)?.permission;
+              if (perm?.id) {
+                mapping.permissionId = perm.id;
+              }
+            }
+
+            setMapping(messageId, mapping);
+            logDebug("Mapping stored", { messageId, sessionId, actionType });
+          }
         }
       } catch (error) {
         logError("Failed to send Feishu notification", {
@@ -203,5 +244,21 @@ const FeishuNotifierPlugin: Plugin = async ({ client, directory }) => {
     },
   };
 };
+
+function mapNotificationToAction(notificationType: string): 'continue' | 'permission' | 'question' | 'input' | null {
+  switch (notificationType) {
+    case 'session_idle':
+    case 'session_error':
+      return 'continue';
+    case 'permission_required':
+      return 'permission';
+    case 'question_asked':
+      return 'question';
+    case 'interaction_required':
+      return 'input';
+    default:
+      return null;
+  }
+}
 
 export default FeishuNotifierPlugin;
