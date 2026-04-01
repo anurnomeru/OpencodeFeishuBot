@@ -1,7 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin";
 import { loadConfigWithSource } from "./config";
 import { sendTextMessage, sendRichTextMessage } from "./feishu/client";
-import { buildNotification, recordEventContext } from "./feishu/messages";
+import { buildNotification, recordEventContext, extractSessionID } from "./feishu/messages";
 import { mapEventToNotification } from "./hooks";
 
 const serviceName = "opencode-feishu-notifier";
@@ -62,15 +62,70 @@ const FeishuNotifierPlugin: Plugin = async ({ client, directory }) => {
       recordEventContext(event);
       logDebug("Event received", { eventType: event.type });
 
-      // Check for session.status with idle state
       let notificationType = mapEventToNotification(event.type);
 
-      // Special handling for session.status events
       if (
         event.type === "session.status" &&
         event.properties?.status?.type === "idle"
       ) {
+        const sessionID = extractSessionID(event);
+        if (sessionID && client.session?.get) {
+          try {
+            const sessionResponse = await client.session.get({
+              path: { id: sessionID },
+            });
+            const session = sessionResponse?.data;
+            logDebug("Session check for parentID", {
+              sessionID,
+              hasData: !!session,
+              parentID: session?.parentID ?? null,
+              allKeys: session ? Object.keys(session) : [],
+            });
+            if (session?.parentID) {
+              logDebug("Skipping subagent session idle notification", {
+                sessionID,
+                parentID: session.parentID,
+              });
+              return;
+            }
+          } catch (e) {
+            logDebug("Failed to check session parentID, proceeding with notification", {
+              sessionID,
+              error: String(e),
+            });
+          }
+        }
         notificationType = "session_idle";
+      }
+
+      if (event.type === "session.error") {
+        const sessionID = extractSessionID(event);
+        if (sessionID && client.session?.get) {
+          try {
+            const sessionResponse = await client.session.get({
+              path: { id: sessionID },
+            });
+            const session = sessionResponse?.data;
+            logDebug("Session error check for parentID", {
+              sessionID,
+              hasData: !!session,
+              parentID: session?.parentID ?? null,
+            });
+            if (session?.parentID) {
+              logDebug("Skipping subagent session error notification", {
+                sessionID,
+                parentID: session.parentID,
+              });
+              return;
+            }
+          } catch (e) {
+            logDebug("Failed to check session parentID for error event", {
+              sessionID,
+              error: String(e),
+            });
+          }
+        }
+        notificationType = "session_error";
       }
 
       if (!notificationType) {

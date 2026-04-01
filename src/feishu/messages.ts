@@ -26,6 +26,7 @@ export type NotificationType =
   | "command_args_required"
   | "confirmation_required"
   | "session_idle"
+  | "session_error"
   | "question_asked"
   | "setup_test"
   | "generic_event"
@@ -48,6 +49,12 @@ type SessionClient = {
       data?: {
         title?: string;
       };
+    }>;
+    messages?: (options: { path: { id: string }; query?: { limit?: number } }) => Promise<{
+      data?: Array<{
+        info: { role: string; id?: string };
+        parts: Array<{ type: string; text?: string }>;
+      }>;
     }>;
   };
 };
@@ -118,6 +125,10 @@ function extractSessionContext(event?: EventPayload): SessionContext {
   };
 }
 
+export function extractSessionID(event?: EventPayload): string | undefined {
+  return extractSessionContext(event).sessionID;
+}
+
 async function resolveSessionContext(
   event?: EventPayload,
   client?: SessionClient
@@ -175,6 +186,45 @@ export function recordEventContext(event?: EventPayload): void {
   }
 }
 
+async function fetchLastAssistantReply(
+  sessionID: string,
+  client?: SessionClient
+): Promise<string | undefined> {
+  if (!client?.session?.messages) {
+    return undefined;
+  }
+
+  try {
+    const response = await client.session.messages({
+      path: { id: sessionID },
+      query: { limit: 5 },
+    });
+
+    const messages = response?.data;
+    if (!messages || messages.length === 0) {
+      return undefined;
+    }
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.info?.role === "assistant") {
+        const textParts = msg.parts
+          .filter((p) => p.type === "text" && p.text)
+          .map((p) => p.text as string);
+
+        if (textParts.length > 0) {
+          const fullText = textParts.join("\n");
+          return fullText.length > 1500 ? fullText.slice(0, 1500) + "…" : fullText;
+        }
+      }
+    }
+
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // 保持向后兼容的标题映射
 const titles: Record<NotificationType, string> = {
   interaction_required: "需要交互",
@@ -182,6 +232,7 @@ const titles: Record<NotificationType, string> = {
   command_args_required: "需要补充参数",
   confirmation_required: "需要确认",
   session_idle: "OpenCode 闲暇",
+  session_error: "会话结束",
   question_asked: "需要选择方案",
   setup_test: "Feishu 通知测试",
   generic_event: "OpenCode 事件"
@@ -200,11 +251,15 @@ export async function buildStructuredNotification(
   directory?: string,
   client?: SessionClient
 ): Promise<NotificationResult> {
-  // 导入模板系统
   const { buildStructuredMessage } = await import("./templates")
 
   const eventPayload = extractEventPayload(event);
   const sessionContext = await resolveSessionContext(event, client);
+
+  let assistantReply: string | undefined;
+  if (type === "session_idle" && sessionContext.sessionID) {
+    assistantReply = await fetchLastAssistantReply(sessionContext.sessionID, client);
+  }
   
   try {
     const text = await buildStructuredMessage(
@@ -212,17 +267,16 @@ export async function buildStructuredNotification(
       eventPayload,
       event?.type,
       directory,
-      sessionContext
+      sessionContext,
+      assistantReply
     )
     
-    // 返回标题（保持向后兼容）
     return {
       title: titles[type],
       text,
       richContent: textToPostContent(text, titles[type])
     }
   } catch (error) {
-    // 如果模板系统失败，回退到原始实现
     return buildLegacyNotification(type, event)
   }
 }

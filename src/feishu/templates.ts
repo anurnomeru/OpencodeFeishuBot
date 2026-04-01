@@ -19,6 +19,12 @@ const REASON_CONFIGS = {
     requiresAction: true,
     emoji: "💤",
   },
+  session_error: {
+    category: "会话结束",
+    description: "会话因错误或中止而结束",
+    requiresAction: false,
+    emoji: "🛑",
+  },
   permission_required: {
     category: "需要权限",
     description: "需要访问文件权限才能继续",
@@ -80,6 +86,7 @@ function getEventTitle(eventType: NotificationType): string {
     command_args_required: "缺少参数",
     confirmation_required: "需要确认",
     session_idle: "任务完成",
+    session_error: "会话结束",
     question_asked: "请做选择",
     setup_test: "测试通知",
     generic_event: "事件通知",
@@ -200,6 +207,48 @@ function extractActionDetails(
         details.push(`- 状态: 重试中 (第 ${attempt || "?"} 次)`);
         if (message) {
           details.push(`- 原因: ${message}`);
+        }
+      }
+    }
+    return details;
+  }
+
+  // ========== session.error ==========
+  if (originalEventType === "session.error") {
+    const error = payload.error as Record<string, unknown> | undefined;
+    if (error) {
+      const errorName = error.name as string | undefined;
+      const errorData = error.data as Record<string, unknown> | undefined;
+
+      const errorTypeLabels: Record<string, string> = {
+        MessageAbortedError: "用户中止",
+        ProviderAuthError: "认证失败",
+        UnknownError: "未知错误",
+        ContextOverflowError: "上下文溢出",
+        MessageOutputLengthError: "输出超长",
+        StructuredOutputError: "结构化输出错误",
+        APIError: "API 错误",
+      };
+
+      const errorLabel = errorTypeLabels[errorName || ""] || errorName || "错误";
+      details.push(`- 结束原因: ${errorLabel}`);
+
+      if (errorData) {
+        const errorMsg = errorData.message as string | undefined;
+        if (errorMsg) {
+          details.push(`- 详情: ${errorMsg}`);
+        }
+        if (errorName === "ProviderAuthError") {
+          const providerID = errorData.providerID as string | undefined;
+          if (providerID) {
+            details.push(`- Provider: ${providerID}`);
+          }
+        }
+        if (errorName === "APIError") {
+          const statusCode = errorData.statusCode as number | undefined;
+          if (statusCode) {
+            details.push(`- 状态码: ${statusCode}`);
+          }
         }
       }
     }
@@ -376,8 +425,14 @@ export class BeautifulMessageTemplate implements MessageTemplate {
     const title = getEventTitle(eventType);
     const sections: string[] = [];
 
+    if (context.assistantReply) {
+      sections.push(context.assistantReply);
+      sections.push("");
+      sections.push(" --- ");
+      sections.push("");
+    }
+
     sections.push(`${config.emoji} **${title}**`);
-    sections.push("");
 
     sections.push("**🖥️ 环境**");
     if (context.project.hostname) sections.push(`- 主机: ${context.project.hostname}`);
@@ -428,8 +483,8 @@ sections.push("**📂 路径**");
     }
     sections.push("");
 
-    // Quickview 放底部：飞书消息从上往下看，重要信息应放在最下面
-    sections.push("---");
+    sections.push(" --- ");
+    sections.push("");
     sections.push("**📌 Quickview**");
     sections.push(`- 项目: ${context.project.projectName}`);
     sections.push(`- 会话: ${context.sessionTitle ?? context.sessionID ?? "-"}`);
@@ -576,7 +631,8 @@ export async function buildMessageContext(
     sessionID?: string;
     sessionTitle?: string;
     agentName?: string;
-  }
+  },
+  assistantReply?: string
 ): Promise<MessageContext> {
   const project = await extractProjectContext(directory || process.cwd());
   const progress = createProgressInfo(eventPayload, directory || process.cwd());
@@ -590,12 +646,10 @@ export async function buildMessageContext(
     sessionID: sessionContext?.sessionID,
     sessionTitle: sessionContext?.sessionTitle,
     agentName: sessionContext?.agentName,
+    assistantReply,
   };
 }
 
-/**
- * 快速构建消息（简化接口）
- */
 export async function buildStructuredMessage(
   eventType: NotificationType,
   eventPayload?: unknown,
@@ -605,14 +659,16 @@ export async function buildStructuredMessage(
     sessionID?: string;
     sessionTitle?: string;
     agentName?: string;
-  }
+  },
+  assistantReply?: string
 ): Promise<string> {
   const context = await buildMessageContext(
     eventType,
     eventPayload,
     originalEventType,
     directory,
-    sessionContext
+    sessionContext,
+    assistantReply
   );
 
   const template = createMessageTemplate();

@@ -46,22 +46,15 @@ export interface ProgressInfo {
  * 构建消息所需的所有上下文信息
  */
 export interface MessageContext {
-  /** 项目上下文 */
   project: ProjectContext;
-  /** 进度信息 */
   progress: ProgressInfo;
-  /** 事件类型 */
   eventType: NotificationType;
-  /** 原始事件负载 */
   eventPayload?: unknown;
-  /** 事件原始类型 */
   originalEventType?: string;
-  /** 会话 ID */
   sessionID?: string;
-  /** 会话标题 */
   sessionTitle?: string;
-  /** 触发事件的 Agent 名称 */
   agentName?: string;
+  assistantReply?: string;
 }
 
 /**
