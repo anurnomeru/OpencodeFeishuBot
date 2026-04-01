@@ -1,8 +1,8 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { FeishuConfig } from './config';
-import { getMapping, deleteMapping } from './store';
-import { promptSession, replyPermission, appendPrompt, submitPrompt } from './sdk-client';
+import { getMapping, deleteMapping, isMessageProcessed, markMessageProcessed } from './store';
+import { promptSession, replyPermission, appendPrompt, submitPrompt, getOpenCodeStatus } from './sdk-client';
 
 export class ReplyHandler {
   private feishuClient: Lark.Client;
@@ -26,11 +26,17 @@ export class ReplyHandler {
 
   async handle(data: any): Promise<void> {
     try {
-      console.log("[Feishu] ReplyHandler.handle called");
       const msg = data?.message;
-      if (!msg) {
-        console.log("[Feishu] No message in data");
+      if (!msg) return;
+
+      const messageId = msg.message_id;
+      if (messageId && isMessageProcessed(messageId)) {
+        console.log(`[Feishu] Message already processed, skipping: ${messageId}`);
         return;
+      }
+      
+      if (messageId) {
+        markMessageProcessed(messageId);
       }
 
       const parentId = msg.parent_id;
@@ -39,7 +45,6 @@ export class ReplyHandler {
 
       const text = this.parseContent(content);
       console.log(`[Feishu] Message: parentId=${parentId}, text="${text}"`);
-      this.log('info', 'Message received', { parentId, text });
 
       if (parentId) {
         await this.handleReplyToNotification(parentId, text, chatId);
@@ -49,24 +54,19 @@ export class ReplyHandler {
 
     } catch (error) {
       console.error("[Feishu] Handler error:", error);
-      this.log('error', 'Handler error', { error: String(error) });
     }
   }
 
   private async handleReplyToNotification(parentId: string, text: string, chatId: string): Promise<void> {
-    console.log(`[Feishu] handleReplyToNotification: parentId=${parentId}`);
     const mapping = getMapping(parentId);
-    console.log(`[Feishu] Mapping result:`, mapping);
     
     if (!mapping) {
       console.log("[Feishu] Mapping not found, fallback to direct message");
-      this.log('warn', 'Mapping not found, fallback to direct message', { parentId });
       await this.handleDirectMessage(text, chatId);
       return;
     }
 
     console.log(`[Feishu] Found mapping: sessionId=${mapping.sessionId}`);
-    this.log('info', 'Found mapping', { sessionId: mapping.sessionId, actionType: mapping.actionType });
 
     switch (mapping.actionType) {
       case 'continue':
@@ -87,59 +87,106 @@ export class ReplyHandler {
   }
 
   private async handleDirectMessage(text: string, chatId: string): Promise<void> {
-    this.log('info', 'Direct message', { text });
+    console.log(`[Feishu] Direct message received (not forwarded to OpenCode): "${text}"`);
+    
+    const status = await getOpenCodeStatus(this.opencodeClient);
+    const message = this.formatStatusMessage(status);
+    await this.sendReply(chatId, message);
+  }
 
-    try {
-      const response = await this.opencodeClient.session.list({});
-      const sessionList = Array.isArray(response) 
-        ? response 
-        : (response as any)?.data || [];
-      
-      this.log('debug', 'Session list result', { 
-        isArray: Array.isArray(response),
-        dataLength: sessionList.length 
-      });
-      
-      if (sessionList.length === 0) {
-        await this.sendReply(chatId, '❌ 没有活跃的 OpenCode session');
-        return;
+  private formatStatusMessage(status: { sessions: any[]; project?: any; agents: string[] }): string {
+    const lines: string[] = [];
+    
+    lines.push('## 🤖 OpenCode 状态概览');
+    lines.push('');
+    
+    if (status.project) {
+      lines.push('### 📂 当前项目');
+      if (status.project.name) {
+        lines.push(`- **项目**: ${status.project.name}`);
       }
-
-      const latestSession = sessionList[0];
-      const sessionId = latestSession.id;
-
-      this.log('info', 'Forward to session', { sessionId });
-
-      await promptSession(this.opencodeClient, sessionId, text);
-      await this.sendReply(chatId, `✅ 已发送到 OpenCode\n\n> ${text}`);
-
-    } catch (error: any) {
-      this.log('error', 'Direct message failed', { error: error.message });
-      await this.sendReply(chatId, `❌ 发送失败: ${error.message}`);
+      if (status.project.branch) {
+        lines.push(`- **分支**: ${status.project.branch}`);
+      }
+      if (status.project.worktree) {
+        lines.push(`- **路径**: ${status.project.worktree}`);
+      }
+      lines.push('');
     }
+    
+    if (status.sessions.length > 0) {
+      lines.push('### 💬 活跃会话');
+      lines.push(`- **总数**: ${status.sessions.length} 个会话`);
+      lines.push('');
+      
+      const idleCount = status.sessions.filter(s => s.status === 'idle').length;
+      const busyCount = status.sessions.filter(s => s.status === 'busy').length;
+      const retryCount = status.sessions.filter(s => s.status === 'retry').length;
+      
+      if (idleCount > 0) lines.push(`  - 💤 空闲: ${idleCount}`);
+      if (busyCount > 0) lines.push(`  - 🔄 运行中: ${busyCount}`);
+      if (retryCount > 0) lines.push(`  - ⚠️ 重试: ${retryCount}`);
+      lines.push('');
+      
+      const busySessions = status.sessions.filter(s => s.status === 'busy' && s.todos?.length > 0);
+      if (busySessions.length > 0) {
+        lines.push('### 📋 正在执行的任务');
+        for (const session of busySessions.slice(0, 3)) {
+          lines.push(`\n**${session.title}**`);
+          if (session.todos) {
+            for (const todo of session.todos) {
+              const statusIcon = todo.status === 'in_progress' ? '▶️' : todo.status === 'completed' ? '✅' : '⏸️';
+              const priorityIcon = todo.priority === 'high' ? '🔥' : todo.priority === 'medium' ? '📌' : '';
+              lines.push(`  ${statusIcon} ${priorityIcon} ${todo.content}`);
+            }
+          }
+        }
+        lines.push('');
+      }
+    } else {
+      lines.push('### 💬 会话状态');
+      lines.push('- 暂无活跃会话');
+      lines.push('');
+    }
+    
+    if (status.agents.length > 0) {
+      lines.push('### 🧠 可用 Agent');
+      const agentList = status.agents.slice(0, 5);
+      lines.push(`- ${agentList.join(' · ')}`);
+      if (status.agents.length > 5) {
+        lines.push(`- 还有 ${status.agents.length - 5} 个...`);
+      }
+      lines.push('');
+    }
+    
+    lines.push('---');
+    lines.push('');
+    lines.push('📌 **使用提示**');
+    lines.push('- 回复通知卡片可与 OpenCode 交互');
+    lines.push('- 普通聊天消息仅展示状态');
+    lines.push('');
+    lines.push(`⏰ ${new Date().toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}`);
+    
+    return lines.join('\n');
   }
 
   private async handleContinue(sessionId: string, text: string, chatId: string): Promise<void> {
-    this.log('info', 'handleContinue called', { sessionId, text });
-    
     if (text.match(/继续|continue|go|下一步|next/i)) {
       try {
-        this.log('info', 'Triggering continue', { sessionId });
+        console.log(`[Feishu] Triggering continue for session: ${sessionId}`);
         await promptSession(this.opencodeClient, sessionId, '继续执行');
-        await this.sendReply(chatId, `✅ 已触发继续执行`);
-        this.log('info', 'Continue triggered', { sessionId });
+        console.log(`[Feishu] Continue triggered`);
       } catch (error: any) {
-        this.log('error', 'Continue failed', { error: error.message });
+        console.error("[Feishu] Continue failed:", error.message);
         await this.sendReply(chatId, `❌ 失败: ${error.message}`);
       }
     } else {
       try {
-        this.log('info', 'Forwarding message to session', { sessionId, text });
+        console.log(`[Feishu] Forwarding to session ${sessionId}: "${text}"`);
         await promptSession(this.opencodeClient, sessionId, text);
-        await this.sendReply(chatId, `✅ 已发送到 OpenCode\n\n> ${text}`);
-        this.log('info', 'Message forwarded', { sessionId });
+        console.log(`[Feishu] Message forwarded`);
       } catch (error: any) {
-        this.log('error', 'Forward failed', { error: error.message });
+        console.error("[Feishu] Forward failed:", error.message);
         await this.sendReply(chatId, `❌ 发送失败: ${error.message}`);
       }
     }
@@ -165,8 +212,7 @@ export class ReplyHandler {
       try {
         await replyPermission(this.opencodeClient, sessionId, permissionId, status);
         const msg = status === 'reject' ? '已拒绝' : status === 'always' ? '已永久批准' : '已批准';
-        await this.sendReply(chatId, `✅ ${msg}`);
-        this.log('info', 'Permission replied', { sessionId, permissionId, status });
+        console.log(`[Feishu] Permission ${status}: ${permissionId}`);
       } catch (error) {
         await this.sendReply(chatId, `❌ 失败: ${error}`);
       }
@@ -182,7 +228,7 @@ export class ReplyHandler {
       if (index >= 0 && index < options.length) {
         try {
           await promptSession(this.opencodeClient, sessionId, options[index]);
-          await this.sendReply(chatId, `✅ 已选择: ${options[index]}`);
+          console.log(`[Feishu] Question answered: ${options[index]}`);
           return;
         } catch (error) {
           await this.sendReply(chatId, `❌ 失败: ${error}`);
@@ -195,7 +241,7 @@ export class ReplyHandler {
       if (text.toLowerCase().includes(option.toLowerCase())) {
         try {
           await promptSession(this.opencodeClient, sessionId, option);
-          await this.sendReply(chatId, `✅ 已选择: ${option}`);
+          console.log(`[Feishu] Question answered: ${option}`);
           return;
         } catch (error) {
           await this.sendReply(chatId, `❌ 失败: ${error}`);
@@ -211,10 +257,9 @@ export class ReplyHandler {
     try {
       await appendPrompt(this.opencodeClient, text);
       await submitPrompt(this.opencodeClient);
-      await this.sendReply(chatId, `✅ 已提交输入`);
-      this.log('info', 'Input submitted', { sessionId });
+      console.log(`[Feishu] Input submitted: "${text}"`);
     } catch (error) {
-      this.log('error', 'Input submit failed', { error: String(error) });
+      console.error("[Feishu] Input submit failed:", error);
       await this.sendReply(chatId, `❌ 提交失败: ${error}`);
     }
   }
@@ -234,7 +279,7 @@ export class ReplyHandler {
         },
       });
     } catch (error) {
-      this.log('error', 'Send reply failed', { error: String(error) });
+      console.error("[Feishu] Send reply failed:", error);
     }
   }
 

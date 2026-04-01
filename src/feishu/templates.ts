@@ -353,17 +353,19 @@ function buildReason(context: MessageContext): string {
   const config = REASON_CONFIGS[eventType];
   const lines: string[] = [];
 
+  if (eventType === "session_idle" || eventType === "session_error") {
+    return "";
+  }
+
   lines.push("**💡 说明**");
   lines.push(config.description);
 
-  // 添加具体操作说明
   const actionDetails = extractActionDetails(eventPayload, originalEventType);
   if (actionDetails.length > 0) {
     lines.push("");
     actionDetails.forEach((detail) => lines.push(detail));
   }
 
-  // 对于需要确认的操作，添加警告
   if (eventType === "confirmation_required") {
     lines.push("");
     lines.push("⚠️ 请谨慎确认此操作");
@@ -419,7 +421,7 @@ export class BeautifulMessageTemplate implements MessageTemplate {
     return buildEnvironment(context);
   }
 
-  buildFullMessage(context: MessageContext): string {
+buildFullMessage(context: MessageContext): string {
     const { eventType, originalEventType, eventPayload, progress } = context;
     const config = REASON_CONFIGS[eventType as keyof typeof REASON_CONFIGS] ?? REASON_CONFIGS_GENERIC;
     const title = getEventTitle(eventType);
@@ -427,12 +429,16 @@ export class BeautifulMessageTemplate implements MessageTemplate {
 
     if (context.assistantReply) {
       sections.push(context.assistantReply);
-      sections.push("");
-      sections.push(" --- ");
-      sections.push("");
+      sections.push("\n");
+      sections.push("---");
+      sections.push("\n");
     }
 
-    sections.push(`${config.emoji} **${title}**`);
+    // session_idle 不显示标题
+    if (eventType !== "session_idle") {
+      sections.push(`${config.emoji} **${title}**`);
+      sections.push("");
+    }
 
     sections.push("**🖥️ 环境**");
     if (context.project.hostname) sections.push(`- 主机: ${context.project.hostname}`);
@@ -443,35 +449,25 @@ export class BeautifulMessageTemplate implements MessageTemplate {
     if (context.agentName) sections.push(`- Agent: ${context.agentName}`);
     sections.push("");
 
-    sections.push("**💡 说明**");
-    sections.push(config.description);
-    if (originalEventType) {
-      sections.push(`- 事件: \`${originalEventType}\``);
-    }
-    const actionDetails = extractActionDetails(eventPayload, originalEventType);
-    if (actionDetails.length > 0) {
-      sections.push("");
-      actionDetails.forEach(d => sections.push(d));
-    }
-    if (eventType === "confirmation_required") {
-      sections.push("");
-      sections.push("⚠️ 请谨慎确认此操作");
-    }
-    sections.push("");
-
-    if (eventPayload && typeof eventPayload === "object") {
-      const payloadStr = JSON.stringify(eventPayload, null, 2);
-      if (payloadStr.length > 2 && payloadStr !== "{}") {
-        const truncated = payloadStr.length > 800 ? payloadStr.slice(0, 800) + "\n…" : payloadStr;
-        sections.push("**📦 原始数据**");
-        sections.push("```json");
-        sections.push(truncated);
-        sections.push("```");
-        sections.push("");
+    if (eventType !== "session_idle" && eventType !== "session_error") {
+      sections.push("**💡 说明**");
+      sections.push(config.description);
+      if (originalEventType) {
+        sections.push(`- 事件: \`${originalEventType}\``);
       }
+      const actionDetails = extractActionDetails(eventPayload, originalEventType);
+      if (actionDetails.length > 0) {
+        sections.push("");
+        actionDetails.forEach(d => sections.push(d));
+      }
+      if (eventType === "confirmation_required") {
+        sections.push("");
+        sections.push("⚠️ 请谨慎确认此操作");
+      }
+      sections.push("");
     }
 
-sections.push("**📂 路径**");
+    sections.push("**📂 路径**");
     sections.push(`- 目录: ${context.project.workingDir}`);
     if (progress.fileChanges) {
       const fc = progress.fileChanges;
@@ -481,37 +477,6 @@ sections.push("**📂 路径**");
       if (fc.deleted) parts.push(`-${fc.deleted}`);
       if (parts.length > 0) sections.push(`- 变更: ${parts.join(" / ")} 个文件`);
     }
-    sections.push("");
-
-    sections.push(" --- ");
-    sections.push("");
-    sections.push("**📌 Quickview**");
-    sections.push(`- 项目: ${context.project.projectName}`);
-    sections.push(`- 会话: ${context.sessionTitle ?? context.sessionID ?? "-"}`);
-    sections.push(`- 事件: \`${originalEventType ?? eventType}\``);
-    if (eventPayload && typeof eventPayload === "object") {
-      const payload = eventPayload as Record<string, unknown>;
-      const status = payload.status as Record<string, unknown> | undefined;
-      if (status?.type) {
-        const statusType = status.type as string;
-        if (statusType === "idle") {
-          sections.push(`- 状态: 空闲，等待指令`);
-        } else if (statusType === "busy") {
-          sections.push(`- 状态: 忙碌中`);
-        } else if (statusType === "retry") {
-          sections.push(`- 状态: 重试中`);
-        } else {
-          sections.push(`- 状态: ${statusType}`);
-        }
-      }
-    }
-    sections.push(`- 一句话: ${config.description}`);
-    sections.push("");
-
-    const now = new Date();
-    const timeStr = now.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    sections.push(`⏰ ${timeStr}`);
-
     return sections.join("\n");
   }
 }
@@ -542,6 +507,10 @@ export class DefaultMessageTemplate implements MessageTemplate {
   buildReason(context: MessageContext): string {
     const { eventType, eventPayload, originalEventType } = context;
     const config = REASON_CONFIGS[eventType];
+
+    if (eventType === "session_idle" || eventType === "session_error") {
+      return "";
+    }
 
     const lines: string[] = [];
     lines.push(`🔔 原因：${config.category}`);
@@ -601,7 +570,10 @@ export class DefaultMessageTemplate implements MessageTemplate {
     const reason = this.buildReason(context);
     const progress = this.buildProgress(context);
 
-    return `${title}\n\n${reason}\n\n${progress}`;
+    if (reason) {
+      return `${title}\n\n${reason}\n\n${progress}`;
+    }
+    return `${title}\n\n${progress}`;
   }
 }
 

@@ -64,3 +64,27 @@ export function deleteMapping(feishuMessageId: string): void {
 export function getStoreSize(): number {
   return Object.keys(loadStore()).length;
 }
+
+const DEDUP_TTL_MS = 5 * 60 * 1000;
+
+export function isMessageProcessed(messageId: string): boolean {
+  const store = loadStore();
+  const key = `processed:${messageId}`;
+  const processedAt = store[key]?.createdAt;
+  
+  if (processedAt && Date.now() - processedAt < DEDUP_TTL_MS) {
+    return true;
+  }
+  
+  return false;
+}
+
+export function markMessageProcessed(messageId: string): void {
+  const store = loadStore();
+  store[`processed:${messageId}`] = {
+    sessionId: '',
+    actionType: 'continue',
+    createdAt: Date.now(),
+  };
+  saveStore(store);
+}
