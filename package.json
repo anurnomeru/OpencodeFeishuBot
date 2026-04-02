@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.24.0",
+    "@larksuiteoapi/node-sdk": "^1.36.0",
     "@opencode-ai/plugin": "^1.0.0"
   },
   "devDependencies": {

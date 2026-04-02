@@ -208,3 +208,220 @@ export async function sendRichTextMessage(
   const postContent = richContent || textToPostContent(text, title)
   return sendMessage(config, "post", postContent)
 }
+
+export async function sendInteractiveCard(
+  config: FeishuConfig,
+  card: unknown
+): Promise<MessageResponse> {
+  return sendMessage(config, "interactive", card)
+}
+
+type CardUpdateResponse = {
+  code: number
+  msg: string
+  data?: {
+    card_id?: string
+  }
+}
+
+export async function updateCard(
+  config: FeishuConfig,
+  cardId: string,
+  card: unknown
+): Promise<CardUpdateResponse> {
+  const fetchImpl = ensureFetch()
+  const token = await getTenantAccessToken(config)
+  
+  const response = await fetchImpl(
+    `https://open.feishu.cn/open-apis/cardkit/v1/cards/${cardId}`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        card: {
+          type: 'card_json',
+          data: JSON.stringify(card)
+        },
+        sequence: Date.now()
+      })
+    }
+  )
+  
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => `Failed to read error response`)
+    throw new Error(`Feishu card update failed: ${response.status} - ${errorText}`)
+  }
+  
+  const payload = await readJson<CardUpdateResponse>(response)
+  if (payload.code !== 0) {
+    if (isTokenExpiredError(payload.code)) {
+      clearTokenCache(config)
+      return updateCard(config, cardId, card)
+    }
+    throw new Error(`Feishu card update failed: ${payload.msg} (${payload.code})`)
+  }
+  
+  return payload
+}
+
+export function buildPermissionCard(params: {
+  title: string
+  message: string
+  sessionId: string
+  permissionId: string
+  permissionType?: string
+  paths?: string[]
+}): unknown {
+  const elements: any[] = [
+    {
+      tag: 'markdown',
+      content: `## 🔐 **需要权限**\n\n${params.message}`
+    }
+  ]
+
+  if (params.permissionType) {
+    elements.push({
+      tag: 'markdown',
+      content: `**权限类型**: ${params.permissionType}`
+    })
+  }
+
+  if (params.paths && params.paths.length > 0) {
+    const pathsText = params.paths.map(p => `- \`${p}\``).join('\n')
+    elements.push({
+      tag: 'markdown',
+      content: `**涉及路径**:\n${pathsText}`
+    })
+  }
+
+  elements.push({
+    tag: 'hr'
+  })
+
+  elements.push({
+    tag: 'column_set',
+    flex_mode: 'bisect',
+    horizontal_align: 'center',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        elements: [{
+          tag: 'button',
+          type: 'primary_filled',
+          text: { tag: 'plain_text', content: '✅ 批准' },
+          behaviors: [{
+            type: 'callback',
+            value: {
+              action: 'approve:once',
+              sessionId: params.sessionId,
+              permissionId: params.permissionId
+            }
+          }]
+        }]
+      },
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        elements: [{
+          tag: 'button',
+          type: 'default',
+          text: { tag: 'plain_text', content: '✓ 总是批准' },
+          behaviors: [{
+            type: 'callback',
+            value: {
+              action: 'approve:always',
+              sessionId: params.sessionId,
+              permissionId: params.permissionId
+            }
+          }]
+        }]
+      },
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        elements: [{
+          tag: 'button',
+          type: 'danger_filled',
+          text: { tag: 'plain_text', content: '❌ 拒绝' },
+          behaviors: [{
+            type: 'callback',
+            value: {
+              action: 'approve:reject',
+              sessionId: params.sessionId,
+              permissionId: params.permissionId
+            }
+          }]
+        }]
+      }
+    ]
+  })
+
+  return { elements }
+}
+
+export function buildQuestionCard(params: {
+  title: string
+  message: string
+  sessionId: string
+  options: Array<{ label: string; description?: string }>
+}): unknown {
+  const elements: any[] = [
+    {
+      tag: 'markdown',
+      content: `## ❓ **${params.title}**\n\n${params.message}`
+    }
+  ]
+
+  if (params.options.length === 0) {
+    elements.push({ tag: 'hr' })
+    elements.push({
+      tag: 'markdown',
+      content: '> 💡 **回复此消息**即可直接输入你的答案'
+    })
+    elements.push({
+      tag: 'markdown',
+      content: '> 例如：直接回复你想要的答案内容'
+    })
+  } else {
+    const columns: any[] = params.options.map((option, index) => ({
+      tag: 'column',
+      width: 'auto',
+      elements: [{
+        tag: 'button',
+        type: index === 0 ? 'primary' : 'default',
+        text: { tag: 'plain_text', content: `${index + 1}️⃣ ${option.label}` },
+        behaviors: [{
+          type: 'callback',
+          value: {
+            action: 'select',
+            sessionId: params.sessionId,
+            optionIndex: index,
+            optionLabel: option.label
+          }
+        }]
+      }]
+    }))
+
+    elements.push({ tag: 'hr' })
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      horizontal_align: 'center',
+      columns
+    })
+    elements.push({ tag: 'hr' })
+    elements.push({
+      tag: 'markdown',
+      content: '> 💡 或**回复此消息**直接输入自定义答案'
+    })
+  }
+
+  return { elements }
+}

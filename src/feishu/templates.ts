@@ -429,9 +429,9 @@ buildFullMessage(context: MessageContext): string {
 
     if (context.assistantReply) {
       sections.push(context.assistantReply);
-      sections.push("\n");
+      sections.push("");
       sections.push("---");
-      sections.push("\n");
+      sections.push("");
     }
 
     // session_idle 不显示标题
